@@ -41,7 +41,7 @@ const DEFAULT_CATEGORIES = [
 const DEFAULT_STATE = {
   version: 1,
   income: 0,
-  currency: '$',
+  currency: 'RWF ',
   categories: DEFAULT_CATEGORIES.slice(),
   expenses: [],
   wishlist: [],
