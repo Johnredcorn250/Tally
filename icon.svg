@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Tally">
+  <title>Tally</title>
+  <rect width="512" height="512" rx="112" ry="112" fill="#1A1A18"/>
+  <g fill="none" stroke="#A4C3A2" stroke-width="32" stroke-linecap="round">
+    <line x1="146" y1="160" x2="144" y2="356"/>
+    <line x1="216" y1="156" x2="218" y2="360"/>
+    <line x1="288" y1="158" x2="286" y2="358"/>
+    <line x1="358" y1="154" x2="362" y2="358"/>
+    <line x1="118" y1="368" x2="394" y2="148"/>
+  </g>
+</svg>
