@@ -109,8 +109,8 @@ function daysInCurrentMonth() {
 function fmtMoney(n, opts = {}) {
   const cur = state.currency || '$';
   const abs = Math.abs(n);
-  const fixed = abs < 100 && abs > 0 ? abs.toFixed(2) : Math.round(abs).toLocaleString();
-  return (n < 0 ? '-' : '') + cur + fixed;
+const fixed = Math.round(abs).toLocaleString();
+   return (n < 0 ? '-' : '') + cur + fixed;
 }
 
 function fmtMoneyHero(n) {
