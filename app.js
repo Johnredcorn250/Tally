@@ -1,1104 +1,1049 @@
 /* ===================================================================
-   TALLY — a personal budgeting companion
-   Single-user, localStorage only, no backend.
-   =================================================================== */
+   Tally — app logic
+   Single file, no build step, no dependencies. Everything persists to
+   localStorage under STORAGE_KEY.
 
-(() => {
-'use strict';
+   Tweak points:
+   - DEFAULT_CATEGORIES  → starter categories
+   - safeToSpendToday()  → the core formula
+   - categoryPace()      → what counts as a category "running hot"
+   - computeTradeoff()   → what the pre-purchase pause screen shows
+   - MOODS               → the mood chips shown in that pause screen
+=================================================================== */
 
-/* ---------- icons ----------- */
-const ICON = {
-  home:        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5 12 4l9 7.5"/><path d="M5 10v9.5h14V10"/></svg>',
-  food:        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 3v8a4 4 0 0 0 8 0V3"/><path d="M8 3v18"/><path d="M16 3c2 0 4 2 4 5s-2 5-4 5v8"/></svg>',
-  transport:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="7" rx="2"/><path d="M5 11l2-5h10l2 5"/><circle cx="7.5" cy="18" r="1.2"/><circle cx="16.5" cy="18" r="1.2"/></svg>',
-  savings:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a6 6 0 0 1 12 0v3a3 3 0 0 0 3 3v-9"/><path d="M4 12v3a3 3 0 0 0 3 3h9"/><circle cx="13" cy="11" r="0.8" fill="currentColor"/></svg>',
-  entertainment:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 5.4L20 9l-4.2 3.6L17 18l-5-3-5 3 1.2-5.4L4 9l5.8-0.6z"/></svg>',
-  emergency:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3z"/></svg>',
-  personal:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.2"/><path d="M5 20c0-3.5 3-6 7-6s7 2.5 7 6"/></svg>',
-  health:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-4.3-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 11c0 5.7-7 10-7 10z"/></svg>',
-  bills:       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h10l3 3v15l-2-1.2L15 21l-2-1.2L11 21l-2-1.2L7 21l-1-1.2V3z"/><path d="M9 8h7M9 12h7M9 16h4"/></svg>',
-  dot:         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="2.5" fill="currentColor"/></svg>',
-  edit:        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 5l5 5L9 20H4v-5z"/></svg>',
-  trash:       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>',
-  plus:        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
-  check:       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>',
-  close:       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
-  clock:       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>'
-};
+const STORAGE_KEY = "tally:state:v1";
 
-/* ---------- defaults ----------- */
 const DEFAULT_CATEGORIES = [
-  { id: 'housing',       name: 'Housing',         icon: 'home',          allocated: 0, essential: true,  tone: 'default' },
-  { id: 'food',          name: 'Food & groceries',icon: 'food',          allocated: 0, essential: true,  tone: 'default' },
-  { id: 'transport',     name: 'Transport',       icon: 'transport',     allocated: 0, essential: true,  tone: 'default' },
-  { id: 'bills',         name: 'Bills & utilities',icon: 'bills',        allocated: 0, essential: true,  tone: 'default' },
-  { id: 'savings',       name: 'Savings',         icon: 'savings',       allocated: 0, essential: false, tone: 'default' },
-  { id: 'emergency',     name: 'Emergency fund',  icon: 'emergency',     allocated: 0, essential: false, tone: 'default' },
-  { id: 'entertainment', name: 'Entertainment',   icon: 'entertainment', allocated: 0, essential: false, tone: 'warn' },
-  { id: 'personal',      name: 'Personal',        icon: 'personal',      allocated: 0, essential: false, tone: 'default' }
+  { id: "cat-groceries", name: "Groceries", budget: 400, essential: true },
+  { id: "cat-dining", name: "Dining & delivery", budget: 150, essential: false },
+  { id: "cat-transport", name: "Transport", budget: 120, essential: true },
+  { id: "cat-shopping", name: "Shopping", budget: 100, essential: false },
+  { id: "cat-subscriptions", name: "Subscriptions", budget: 60, essential: false },
+  { id: "cat-fun", name: "Going out", budget: 100, essential: false },
 ];
 
-const DEFAULT_STATE = {
-  version: 1,
-  income: 0,
-  currency: 'RWF ',
-  categories: DEFAULT_CATEGORIES.slice(),
-  expenses: [],
-  wishlist: [],
-  settings: {
-    theme: 'dark',
-    reflectionEnabled: true,
-    streakEnabled: true
-  },
-  streak: { count: 0, lastCheckedDate: null }
+const MOODS = [
+  { id: "stressed", label: "Stressed" },
+  { id: "bored", label: "Bored" },
+  { id: "celebrating", label: "Celebrating" },
+  { id: "needed", label: "Needed it" },
+  { id: "social", label: "Social" },
+];
+
+const HOT_PACE_GRACE = 0.15;   // category counts "hot" once actual% exceeds expected% by this much
+const STREAK_GRACE = 0.10;     // day counts "on pace" within this margin
+const CAT_CREEP_TRIGGER = true; // whether a hot (non-essential-independent) category also triggers tradeoff
+
+let state = null;
+let ui = {
+  selectedAddCategory: null,
+  selectedWishCategory: null,
+  selectedMood: null,
+  pendingExpense: null, // {amount, categoryId, note} awaiting tradeoff decision
 };
 
-const NON_ESSENTIAL_FALLBACK = ['entertainment', 'personal'];
-const MOODS = ['neutral', 'needed', 'bored', 'stressed', 'social', 'reward'];
+/* ------------------------------------------------------------------
+   State: load / save / defaults / month rollover
+------------------------------------------------------------------ */
 
-/* ---------- state + persistence ----------- */
-const STORAGE_KEY = 'tally:state:v1';
-let state = loadState();
+function defaultState() {
+  const now = new Date();
+  return {
+    version: 1,
+    income: 0,
+    categories: DEFAULT_CATEGORIES.map((c) => ({ ...c })),
+    transactions: [],
+    wishlist: [],
+    goal: {
+      enabled: false,
+      name: "",
+      targetAmount: 0,
+      targetDate: "",
+      monthlyContribution: 0,
+      saved: 0,
+      contributions: [],
+    },
+    settings: {
+      theme: "dark",
+      currency: "$",
+      tradeoffPromptEnabled: true,
+      streakEnabled: true,
+      smallPurchaseThreshold: 10,
+    },
+    meta: {
+      createdAt: now.toISOString(),
+      lastOpenedMonth: monthKey(now),
+    },
+  };
+}
 
 function loadState() {
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (!raw) {
+    state = defaultState();
+    saveState();
+    return;
+  }
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return structuredClone(DEFAULT_STATE);
     const parsed = JSON.parse(raw);
-    // merge missing keys from defaults (forward compatibility)
-    return {
-      ...DEFAULT_STATE,
+    // shallow-merge so any new fields introduced later get sane defaults
+    const base = defaultState();
+    state = {
+      ...base,
       ...parsed,
-      settings: { ...DEFAULT_STATE.settings, ...(parsed.settings || {}) },
-      streak: { ...DEFAULT_STATE.streak, ...(parsed.streak || {}) }
+      goal: { ...base.goal, ...(parsed.goal || {}) },
+      settings: { ...base.settings, ...(parsed.settings || {}) },
+      meta: { ...base.meta, ...(parsed.meta || {}) },
     };
   } catch (e) {
-    console.warn('Could not load saved data, starting fresh.', e);
-    return structuredClone(DEFAULT_STATE);
+    console.error("Failed to parse saved state, starting fresh.", e);
+    state = defaultState();
   }
+  runMonthRollover();
+  saveState();
 }
 
 function saveState() {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
-  catch (e) { console.warn('Could not save state.', e); }
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
-/* ---------- utility: ids, dates, money ----------- */
-function uid() { return Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4); }
-
-function todayISO() { return new Date().toISOString().slice(0, 10); }
-
-function monthKey(date) {
-  const d = date ? new Date(date) : new Date();
-  return d.toISOString().slice(0, 7); // YYYY-MM
-}
-
-function daysLeftInMonth() {
-  const now = new Date();
-  const last = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-  return Math.max(1, last.getDate() - now.getDate() + 1);
-}
-
-function dayOfMonth() { return new Date().getDate(); }
-
-function daysInCurrentMonth() {
-  const now = new Date();
-  return new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-}
-
-function fmtMoney(n, opts = {}) {
-  const cur = state.currency || '$';
-  const abs = Math.abs(n);
-const fixed = Math.round(abs).toLocaleString();
-   return (n < 0 ? '-' : '') + cur + fixed;
-}
-
-function fmtMoneyHero(n) {
-  const cur = state.currency || '$';
-  const safe = Math.max(0, n);
-  const whole = Math.floor(safe);
-  const decimals = Math.round((safe - whole) * 100).toString().padStart(2, '0');
-  return `<span class="currency">${cur}</span>${whole.toLocaleString()}<span class="decimal">.${decimals}</span>`;
-}
-
-function fmtRelativeDate(iso) {
-  const now = new Date();
-  const d = new Date(iso);
-  const diffMs = now - d;
-  const diffMin = Math.floor(diffMs / 60000);
-  if (diffMin < 1) return 'just now';
-  if (diffMin < 60) return diffMin + 'm ago';
-  const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return diffHr + 'h ago';
-  const diffDay = Math.floor(diffHr / 24);
-  if (diffDay === 1) return 'yesterday';
-  if (diffDay < 7) return diffDay + 'd ago';
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-}
-
-/* ---------- computed ----------- */
-function getCategory(id) { return state.categories.find(c => c.id === id); }
-
-function expensesThisMonth() {
-  const mk = monthKey();
-  return state.expenses.filter(e => monthKey(e.date) === mk);
-}
-
-function categorySpent(catId) {
-  return expensesThisMonth()
-    .filter(e => e.categoryId === catId)
-    .reduce((a, e) => a + e.amount, 0);
-}
-
-function totalSpent() {
-  return expensesThisMonth().reduce((a, e) => a + e.amount, 0);
-}
-
-function totalAllocated() {
-  return state.categories.reduce((a, c) => a + (Number(c.allocated) || 0), 0);
-}
-
-function unallocated() {
-  return Math.max(0, state.income - totalAllocated());
-}
-
-function safeToSpendToday() {
-  const remaining = state.income - totalSpent();
-  const days = daysLeftInMonth();
-  return remaining / days;
-}
-
-function paceStatus() {
-  // are we on pace vs budget?
-  if (state.income <= 0) return 'neutral';
-  const day = dayOfMonth();
-  const total = daysInCurrentMonth();
-  const expectedFraction = day / total;
-  const spentFraction = totalSpent() / state.income;
-  if (spentFraction > expectedFraction + 0.08) return 'tight';
-  if (spentFraction > 1) return 'over';
-  return 'on-track';
-}
-
-/* ---------- greeting + streak ----------- */
-function refreshHeader() {
-  const hour = new Date().getHours();
-  let greet = 'Good evening';
-  if (hour < 12) greet = 'Good morning';
-  else if (hour < 18) greet = 'Good afternoon';
-  document.getElementById('greeting-line').textContent = greet;
-  const day = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
-  document.getElementById('greeting-sub').textContent = `${day} · day ${dayOfMonth()} of ${daysInCurrentMonth()}`;
-  document.getElementById('streak-count').textContent = state.streak.count || 0;
-  document.getElementById('streak-pill').style.opacity = state.settings.streakEnabled ? '1' : '0.4';
-}
-
-function checkStreak() {
-  if (!state.settings.streakEnabled) return;
-  const today = todayISO();
-  if (state.streak.lastCheckedDate === today) return;
-
-  // Streak logic: if yesterday's spending was within pace, increment.
-  // Simple rule: spent so far this month <= (day-1)/total * income
-  const day = dayOfMonth();
-  const total = daysInCurrentMonth();
-  const pace = state.income > 0 ? (day - 1) / total : 0;
-  const spentFraction = state.income > 0 ? totalSpent() / state.income : 0;
-
-  // increment if yesterday was new and we're still under pace
-  if (spentFraction <= pace + 0.05) {
-    state.streak.count = (state.streak.count || 0) + 1;
-  } else {
-    state.streak.count = 0;
+/* Every time the app opens in a new calendar month, deposit that
+   month's goal contribution (once per elapsed month, in case the
+   app wasn't opened for a while). */
+function runMonthRollover() {
+  const g = state.goal;
+  let cursor = state.meta.lastOpenedMonth;
+  const current = monthKey();
+  let guard = 0;
+  while (cursor !== current && guard < 240) {
+    if (g.enabled && g.monthlyContribution > 0) {
+      g.saved += g.monthlyContribution;
+      g.contributions.push({
+        date: cursor + "-01",
+        amount: g.monthlyContribution,
+        source: "monthly",
+      });
+    }
+    cursor = nextMonthKey(cursor);
+    guard++;
   }
-  state.streak.lastCheckedDate = today;
-  saveState();
+  state.meta.lastOpenedMonth = current;
 }
 
-/* ---------- navigation ----------- */
-const VIEWS = ['home', 'budget', 'wishlist', 'insights', 'settings'];
-let currentView = 'home';
+/* ------------------------------------------------------------------
+   Small utilities
+------------------------------------------------------------------ */
 
-function setView(name) {
-  if (!VIEWS.includes(name)) return;
-  currentView = name;
-  document.getElementById('app').dataset.view = name;
-  VIEWS.forEach(v => {
-    const el = document.getElementById('view-' + v);
-    if (!el) return;
-    if (v === name) el.hidden = false;
-    else el.hidden = true;
-  });
-  document.querySelectorAll('.nav-item').forEach(b => {
-    b.classList.toggle('is-active', b.dataset.view === name);
-  });
-  render();
-  window.scrollTo({ top: 0, behavior: 'instant' });
+function uid() {
+  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 }
 
-function render() {
-  refreshHeader();
-  if (currentView === 'home')      renderHome();
-  if (currentView === 'budget')    renderBudget();
-  if (currentView === 'wishlist')  renderWishlist();
-  if (currentView === 'insights')  renderInsights();
-  if (currentView === 'settings')  renderSettings();
+function fmt(amount) {
+  const sym = (state && state.settings && state.settings.currency) || "$";
+  const n = Number(amount) || 0;
+  const sign = n < 0 ? "-" : "";
+  return `${sign}${sym}${Math.abs(n).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }
 
-/* ---------- view: HOME ----------- */
+function fmtCents(amount) {
+  const sym = (state && state.settings && state.settings.currency) || "$";
+  const n = Number(amount) || 0;
+  return `${sym}${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function monthKey(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function nextMonthKey(key) {
+  const [y, m] = key.split("-").map(Number);
+  const d = new Date(y, m, 1); // m is already next month (0-indexed trick)
+  return monthKey(d);
+}
+
+function daysInMonth(d = new Date()) {
+  return new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+}
+
+function daysLeftInMonth(d = new Date()) {
+  return daysInMonth(d) - d.getDate() + 1;
+}
+
+function startOfWeek(d = new Date()) {
+  const copy = new Date(d);
+  const day = copy.getDay(); // 0 = Sunday
+  copy.setDate(copy.getDate() - day);
+  copy.setHours(0, 0, 0, 0);
+  return copy;
+}
+
+function isSameMonth(dateStr, mKey) {
+  return dateStr.slice(0, 7) === mKey;
+}
+
+function relativeDate(dateStr) {
+  const d = new Date(dateStr);
+  const now = new Date();
+  const diffDays = Math.floor((now - d) / 86400000);
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+/* ------------------------------------------------------------------
+   Core money calculations
+------------------------------------------------------------------ */
+
+function monthTransactions(mKey = monthKey()) {
+  return state.transactions.filter((t) => isSameMonth(t.date, mKey));
+}
+
+function totalSpent(mKey = monthKey()) {
+  return monthTransactions(mKey).reduce((s, t) => s + t.amount, 0);
+}
+
+function categorySpent(categoryId, mKey = monthKey()) {
+  return monthTransactions(mKey)
+    .filter((t) => t.categoryId === categoryId)
+    .reduce((s, t) => s + t.amount, 0);
+}
+
+/* safe-to-spend-today = (income - spent so far - goal reserve) / days left.
+   Pass extraSpend to preview what a hypothetical purchase would do to it. */
+function safeToSpendToday(extraSpend = 0) {
+  const spent = totalSpent() + extraSpend;
+  const reserved = state.goal.enabled ? state.goal.monthlyContribution || 0 : 0;
+  const available = state.income - spent - reserved;
+  const dLeft = daysLeftInMonth();
+  return available / Math.max(dLeft, 1);
+}
+
+/* How a category is pacing against the calendar. "hot" = spending
+   faster than the month is elapsing, beyond a grace margin. */
+function categoryPace(categoryId) {
+  const cat = state.categories.find((c) => c.id === categoryId);
+  if (!cat) return { expectedPct: 0, actualPct: 0, hot: false, spent: 0, budget: 0 };
+  const spent = categorySpent(categoryId);
+  const dim = daysInMonth();
+  const dom = new Date().getDate();
+  const expectedPct = dom / dim;
+  const actualPct = cat.budget > 0 ? spent / cat.budget : 0;
+  const hot = cat.budget > 0 && actualPct - expectedPct > HOT_PACE_GRACE;
+  return { expectedPct, actualPct, hot, spent, budget: cat.budget };
+}
+
+function isRiskyCategory(categoryId) {
+  const cat = state.categories.find((c) => c.id === categoryId);
+  if (!cat) return false;
+  const pace = categoryPace(categoryId);
+  return !cat.essential || (CAT_CREEP_TRIGGER && pace.hot);
+}
+
+/* What the pre-purchase pause screen needs to show: category impact,
+   safe-to-spend impact, and goal impact. */
+function computeTradeoff(amount, categoryId) {
+  const cat = state.categories.find((c) => c.id === categoryId);
+  const pace = categoryPace(categoryId);
+  const newSpent = pace.spent + amount;
+  const catPct = pace.budget > 0 ? Math.round((newSpent / pace.budget) * 100) : null;
+
+  const before = safeToSpendToday();
+  const after = safeToSpendToday(amount);
+
+  let goalPct = null;
+  if (state.goal.enabled && state.goal.monthlyContribution > 0) {
+    goalPct = Math.round((amount / state.goal.monthlyContribution) * 100);
+  }
+
+  return { cat, pace, newSpent, catPct, before, after, goalPct };
+}
+
+function goalProjection() {
+  const g = state.goal;
+  if (!g.enabled || !g.monthlyContribution) return null;
+  const remaining = g.targetAmount - g.saved;
+  if (remaining <= 0) return { monthsLeft: 0, eta: new Date(), done: true };
+  const monthsLeft = Math.ceil(remaining / g.monthlyContribution);
+  const eta = new Date();
+  eta.setMonth(eta.getMonth() + monthsLeft);
+  return { monthsLeft, eta, done: false };
+}
+
+/* Streak: consecutive days (ending today) where cumulative spend for
+   the month stayed within pace of the calendar, plus a grace margin. */
+function computeStreak() {
+  if (!state.settings.streakEnabled) return 0;
+  const today = new Date();
+  const dim = daysInMonth(today);
+  let streak = 0;
+  for (let day = today.getDate(); day >= 1; day--) {
+    const cutoff = new Date(today.getFullYear(), today.getMonth(), day, 23, 59, 59);
+    const spentByThen = state.transactions
+      .filter((t) => isSameMonth(t.date, monthKey(today)) && new Date(t.date) <= cutoff)
+      .reduce((s, t) => s + t.amount, 0);
+    const expectedByThen = state.income * (day / dim);
+    if (state.income <= 0 || spentByThen <= expectedByThen * (1 + STREAK_GRACE)) {
+      streak++;
+    } else {
+      break;
+    }
+  }
+  return streak;
+}
+
+/* ------------------------------------------------------------------
+   Toast
+------------------------------------------------------------------ */
+
+let toastTimer = null;
+function toast(message) {
+  const el = document.getElementById("toast");
+  el.textContent = message;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 2400);
+}
+
+/* ------------------------------------------------------------------
+   Tab navigation
+------------------------------------------------------------------ */
+
+function switchView(name) {
+  document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
+  document.getElementById(`view-${name}`).classList.add("active");
+  document.querySelectorAll(".tab-btn").forEach((b) => b.classList.toggle("active", b.dataset.view === name));
+  renderView(name);
+}
+
+function renderView(name) {
+  if (name === "home") renderHome();
+  if (name === "budget") renderBudget();
+  if (name === "add") renderAdd();
+  if (name === "wishlist") renderWishlist();
+  if (name === "insights") renderInsights();
+  if (name === "settings") renderSettings();
+}
+
+function renderAll() {
+  applyTheme();
+  document.getElementById("streak-count").textContent = computeStreak();
+  renderView(currentView());
+}
+
+function currentView() {
+  const active = document.querySelector(".view.active");
+  return active ? active.id.replace("view-", "") : "home";
+}
+
+function applyTheme() {
+  document.documentElement.setAttribute("data-theme", state.settings.theme === "light" ? "light" : "dark");
+}
+
+/* ------------------------------------------------------------------
+   HOME
+------------------------------------------------------------------ */
+
 function renderHome() {
-  const el = document.getElementById('view-home');
   const safe = safeToSpendToday();
-  const pace = paceStatus();
-  const paceLabel =
-    pace === 'over'      ? 'Past your monthly budget' :
-    pace === 'tight'     ? 'Spending faster than pace' :
-    pace === 'neutral'   ? 'Add your monthly income to begin' :
-                           'On pace with the month';
-  const paceClass =
-    pace === 'over'      ? 'over' :
-    pace === 'tight'     ? 'tight' : '';
+  const amountEl = document.getElementById("home-safe-amount");
+  amountEl.textContent = fmt(safe);
+  amountEl.classList.remove("warn", "danger");
+  if (safe < 0) amountEl.classList.add("danger");
+  else if (safe < safeBaselineWarnThreshold()) amountEl.classList.add("warn");
 
-  const recent = state.expenses
-    .slice()
-    .sort((a, b) => new Date(b.date) - new Date(a.date))
-    .slice(0, 5);
+  document.getElementById("home-safe-sub").textContent =
+    daysLeftInMonth() === 1 ? "Last day of the month" : `${daysLeftInMonth()} days left this month`;
 
-  el.innerHTML = `
-    <div class="card safe-hero">
-      <div class="safe-label">Safe to spend today</div>
-      <div class="safe-amount">${fmtMoneyHero(safe)}</div>
-      <div class="safe-sub ${paceClass}">
-        <span class="dot"></span>
-        <span>${paceLabel} · ${daysLeftInMonth()} days left</span>
-      </div>
-    </div>
+  // goal card
+  const g = state.goal;
+  if (g.enabled && g.targetAmount > 0) {
+    const pct = Math.min(100, Math.round((g.saved / g.targetAmount) * 100));
+    document.getElementById("home-goal-name").textContent = g.name || "Goal";
+    document.getElementById("home-goal-fill").style.width = `${pct}%`;
+    document.getElementById("home-goal-saved").textContent = fmt(g.saved);
+    document.getElementById("home-goal-target").textContent = `of ${fmt(g.targetAmount)}`;
+    const proj = goalProjection();
+    document.getElementById("home-goal-eta").textContent = proj
+      ? proj.done
+        ? "reached!"
+        : `~${proj.eta.toLocaleDateString(undefined, { month: "short", year: "numeric" })}`
+      : "set a monthly amount";
+  } else {
+    document.getElementById("home-goal-name").textContent = "No goal set yet — add one in Budget";
+    document.getElementById("home-goal-fill").style.width = "0%";
+    document.getElementById("home-goal-saved").textContent = fmt(0);
+    document.getElementById("home-goal-target").textContent = "of $0";
+    document.getElementById("home-goal-eta").textContent = "—";
+  }
 
-    <div class="stat-row">
-      <div class="stat">
-        <div class="stat-label">Income</div>
-        <div class="stat-value">${fmtMoney(state.income)}</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Spent</div>
-        <div class="stat-value ${totalSpent() > state.income ? 'danger' : ''}">${fmtMoney(totalSpent())}</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Left</div>
-        <div class="stat-value">${fmtMoney(Math.max(0, state.income - totalSpent()))}</div>
-      </div>
-    </div>
+  // this week stats
+  const weekStart = startOfWeek();
+  const weekTx = state.transactions.filter((t) => new Date(t.date) >= weekStart);
+  const weekSpent = weekTx.reduce((s, t) => s + t.amount, 0);
+  const smallTx = weekTx.filter((t) => t.small);
+  const smallTotal = smallTx.reduce((s, t) => s + t.amount, 0);
+  const weekContribs = g.contributions.filter(
+    (c) => c.source === "wishlist-skip" && new Date(c.date) >= weekStart
+  );
+  const avoided = weekContribs.reduce((s, c) => s + c.amount, 0);
 
-    <div class="section-head">
-      <div class="section-title">Categories</div>
-      <button class="section-action" data-action="go-budget">Adjust</button>
-    </div>
-    ${state.categories.length === 0
-      ? renderEmpty('No categories yet', 'Head to Budget to add some.')
-      : `<div class="cat-list">${state.categories.map(renderCategoryRow).join('')}</div>`
-    }
+  document.getElementById("home-week-spent").textContent = fmt(weekSpent);
+  document.getElementById("home-week-small").textContent = fmt(smallTotal);
+  document.getElementById("home-small-count").textContent = smallTx.length;
+  document.getElementById("home-week-avoided").textContent = fmt(avoided);
 
-    <div class="section-head">
-      <div class="section-title">Recent activity</div>
-      ${recent.length ? '<button class="section-action" data-action="go-insights">Insights</button>' : ''}
-    </div>
-    ${recent.length === 0
-      ? renderEmpty('Quiet so far', 'Tap the + below to log your first expense.')
-      : `<div class="card activity">${recent.map(renderActivityRow).join('')}</div>`
-    }
-  `;
-
-  el.querySelector('[data-action="go-budget"]')?.addEventListener('click', () => setView('budget'));
-  el.querySelector('[data-action="go-insights"]')?.addEventListener('click', () => setView('insights'));
-}
-
-function renderCategoryRow(cat) {
-  const spent = categorySpent(cat.id);
-  const allocated = Number(cat.allocated) || 0;
-  const pct = allocated > 0 ? Math.min(100, (spent / allocated) * 100) : 0;
-  const overage = allocated > 0 && spent > allocated;
-  const tight = allocated > 0 && spent / allocated > 0.85;
-  const barClass = overage ? 'danger' : tight ? 'warn' : '';
-  const iconTone = overage ? 'danger' : (cat.tone === 'warn' ? 'warn' : '');
-  return `
-    <div class="cat-row" data-cat="${cat.id}">
+  // categories
+  const catList = document.getElementById("home-categories");
+  catList.innerHTML = "";
+  if (state.categories.length === 0) {
+    catList.innerHTML = `<div class="empty-note">No categories yet. Add some in Budget.</div>`;
+  }
+  state.categories.forEach((cat) => {
+    const pace = categoryPace(cat.id);
+    const pct = cat.budget > 0 ? Math.min(100, Math.round((pace.spent / cat.budget) * 100)) : 0;
+    const row = document.createElement("div");
+    row.className = "category-row";
+    row.innerHTML = `
       <div class="cat-row-top">
-        <div class="cat-icon ${iconTone}">${ICON[cat.icon] || ICON.dot}</div>
-        <div class="cat-meta">
-          <div class="cat-name">${escapeHtml(cat.name)}</div>
-          <div class="cat-sub">${cat.essential ? 'Essential' : 'Discretionary'}${allocated ? ' · ' + Math.round(pct) + '% used' : ' · no budget set'}</div>
-        </div>
-        <div class="cat-amounts">
-          <div class="spent">${fmtMoney(spent)}</div>
-          <div class="of">of ${fmtMoney(allocated)}</div>
-        </div>
+        <span>${escapeHtml(cat.name)}${pace.hot ? '<span class="cat-badge hot">Hot</span>' : ""}</span>
+        <span>${fmt(pace.spent)} / ${fmt(cat.budget)}</span>
       </div>
-      <div class="cat-progress"><div class="cat-progress-bar ${barClass}" style="width:${pct}%"></div></div>
-    </div>
-  `;
-}
+      <div class="progress-track">
+        <div class="progress-fill ${pace.hot ? "danger" : pct > 85 ? "warn" : ""}" style="width:${pct}%"></div>
+      </div>`;
+    catList.appendChild(row);
+  });
 
-function renderActivityRow(exp) {
-  const cat = getCategory(exp.categoryId);
-  return `
-    <div class="activity-row">
-      <div class="activity-dot">${cat ? (ICON[cat.icon] || ICON.dot) : ICON.dot}</div>
-      <div class="activity-meta">
-        <div class="activity-cat">${escapeHtml(cat ? cat.name : 'Uncategorised')}</div>
-        <div class="activity-note">${exp.note ? escapeHtml(exp.note) + ' · ' : ''}${fmtRelativeDate(exp.date)}</div>
+  // recent activity
+  const recentList = document.getElementById("home-recent");
+  recentList.innerHTML = "";
+  const recent = [...state.transactions].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 8);
+  if (recent.length === 0) {
+    recentList.innerHTML = `<div class="empty-note">No expenses logged yet.</div>`;
+  }
+  recent.forEach((t) => {
+    const cat = state.categories.find((c) => c.id === t.categoryId);
+    const item = document.createElement("div");
+    item.className = "activity-item";
+    item.innerHTML = `
+      <div>
+        <div>${escapeHtml(t.note || (cat ? cat.name : "Uncategorized"))}</div>
+        <div class="activity-meta">${cat ? escapeHtml(cat.name) : ""} · ${relativeDate(t.date)}</div>
       </div>
-      <div class="activity-amount">${fmtMoney(exp.amount)}</div>
-    </div>
-  `;
+      <div class="activity-amount ${t.tag === "impulse" ? "impulse" : ""}">${fmt(t.amount)}</div>`;
+    recentList.appendChild(item);
+  });
 }
 
-function renderEmpty(title, sub) {
-  return `<div class="card empty"><div class="empty-title">${title}</div><div class="empty-sub">${sub}</div></div>`;
+function safeBaselineWarnThreshold() {
+  // warn when today's safe-to-spend is less than a third of the naive
+  // even-split of income across the whole month
+  return state.income > 0 ? state.income / daysInMonth() / 3 : 0;
 }
 
-/* ---------- view: BUDGET ----------- */
+/* ------------------------------------------------------------------
+   BUDGET
+------------------------------------------------------------------ */
+
 function renderBudget() {
-  const el = document.getElementById('view-budget');
-  const unalloc = unallocated();
-  const ualClass = unalloc < 0 ? 'danger' : '';
-  el.innerHTML = `
-    <div class="card">
-      <div class="section-head" style="margin: 0 0 12px;">
-        <div class="section-title">Monthly income</div>
-      </div>
-      <input type="number" inputmode="decimal" class="input input-amount" id="income-input"
-             value="${state.income || ''}" placeholder="0" min="0" step="0.01" />
-      <div class="spacer-sm"></div>
-      <div class="muted tiny">Every dollar should have a job. Below: assign your income to categories.</div>
-    </div>
+  document.getElementById("budget-income").value = state.income || "";
 
-    <div class="stat-row">
-      <div class="stat">
-        <div class="stat-label">Allocated</div>
-        <div class="stat-value">${fmtMoney(totalAllocated())}</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Unassigned</div>
-        <div class="stat-value ${ualClass}">${fmtMoney(state.income - totalAllocated())}</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Income</div>
-        <div class="stat-value">${fmtMoney(state.income)}</div>
-      </div>
-    </div>
-
-    <div class="section-head">
-      <div class="section-title">Categories</div>
-      <button class="section-action" data-action="add-cat">+ Add</button>
-    </div>
-
-    <div class="cat-list">
-      ${state.categories.map(c => `
-        <div class="cat-row" data-edit-cat="${c.id}">
-          <div class="cat-row-top">
-            <div class="cat-icon ${c.tone === 'warn' ? 'warn' : ''}">${ICON[c.icon] || ICON.dot}</div>
-            <div class="cat-meta">
-              <div class="cat-name">${escapeHtml(c.name)}</div>
-              <div class="cat-sub">${c.essential ? 'Essential' : 'Discretionary'}</div>
-            </div>
-            <div class="cat-amounts">
-              <div class="spent">${fmtMoney(Number(c.allocated) || 0)}</div>
-              <div class="of">${fmtMoney(categorySpent(c.id))} spent</div>
-            </div>
-          </div>
-        </div>
-      `).join('')}
-    </div>
-  `;
-
-  const incomeInput = el.querySelector('#income-input');
-  incomeInput.addEventListener('input', e => {
-    state.income = Math.max(0, parseFloat(e.target.value) || 0);
-    saveState();
-    renderBudget();
-    // Re-query the newly-rendered input and restore focus + caret.
-    const fresh = document.querySelector('#income-input');
-    if (fresh) {
-      fresh.focus();
-      const len = fresh.value.length;
-      try { fresh.setSelectionRange(len, len); } catch (_) {}
-    }
+  const list = document.getElementById("budget-categories");
+  list.innerHTML = "";
+  state.categories.forEach((cat) => {
+    const row = document.createElement("div");
+    row.className = "budget-cat-row";
+    row.innerHTML = `
+      <span class="budget-cat-name">${escapeHtml(cat.name)}${cat.essential ? "" : " · discretionary"}</span>
+      <input type="number" class="budget-cat-input" min="0" step="1" value="${cat.budget}" data-cat="${cat.id}" />`;
+    list.appendChild(row);
   });
-
-  el.querySelector('[data-action="add-cat"]').addEventListener('click', openAddCategory);
-  el.querySelectorAll('[data-edit-cat]').forEach(row => {
-    row.addEventListener('click', () => openEditCategory(row.dataset.editCat));
-  });
-}
-
-/* ---------- view: WISHLIST ----------- */
-function renderWishlist() {
-  const el = document.getElementById('view-wishlist');
-  const sorted = state.wishlist.slice().sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt));
-
-  el.innerHTML = `
-    <div class="section-head" style="margin-top: 6px;">
-      <div class="section-title">Wishlist</div>
-      <button class="section-action" data-action="add-wish">+ Add</button>
-    </div>
-    <div class="muted tiny" style="margin: 0 4px 14px;">A place to park wants. Sit with them for 24 hours before deciding.</div>
-
-    ${sorted.length === 0
-      ? renderEmpty('Nothing waiting', 'Add an item you’re tempted by. Future you decides.')
-      : sorted.map(renderWishItem).join('')
-    }
-  `;
-
-  el.querySelector('[data-action="add-wish"]').addEventListener('click', openAddWishlist);
-  el.querySelectorAll('[data-wish-approve]').forEach(b => b.addEventListener('click', () => approveWish(b.dataset.wishApprove)));
-  el.querySelectorAll('[data-wish-remove]').forEach(b => b.addEventListener('click', () => removeWish(b.dataset.wishRemove)));
-}
-
-function renderWishItem(w) {
-  const hours = (Date.now() - new Date(w.savedAt).getTime()) / 36e5;
-  const ready = hours >= 24;
-  const status = ready
-    ? `<span class="wish-status ready">Ready to decide · waited ${Math.floor(hours)}h</span>`
-    : `<span class="wish-status">Waiting · ${Math.max(0, Math.ceil(24 - hours))}h to go</span>`;
-  return `
-    <div class="wish-card">
-      <div class="wish-top">
-        <div class="wish-name">${escapeHtml(w.name)}</div>
-        <div class="wish-amount">${fmtMoney(w.amount)}</div>
-      </div>
-      ${w.why ? `<div class="wish-why">${escapeHtml(w.why)}</div>` : ''}
-      ${status}
-      <div class="wish-actions">
-        <button class="btn btn-primary" data-wish-approve="${w.id}">Buy it</button>
-        <button class="btn btn-ghost" data-wish-remove="${w.id}">Let go</button>
-      </div>
-    </div>
-  `;
-}
-
-/* ---------- view: INSIGHTS ----------- */
-function renderInsights() {
-  const el = document.getElementById('view-insights');
-  const expenses = expensesThisMonth();
-  const total = totalSpent();
-
-  // build daily series
-  const days = daysInCurrentMonth();
-  const today = dayOfMonth();
-  const series = Array(days).fill(0);
-  expenses.forEach(e => {
-    const day = new Date(e.date).getDate();
-    series[day - 1] += e.amount;
-  });
-
-  // category breakdown
-  const breakdown = state.categories
-    .map(c => ({ ...c, spent: categorySpent(c.id) }))
-    .filter(c => c.spent > 0)
-    .sort((a, b) => b.spent - a.spent);
-
-  // top day-of-week / time-of-day pattern
-  const dowSpend = [0,0,0,0,0,0,0];
-  expenses.forEach(e => { dowSpend[new Date(e.date).getDay()] += e.amount; });
-  const dowNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  const peakIdx = dowSpend.indexOf(Math.max(...dowSpend));
-
-  // mood breakdown
-  const moodCounts = {};
-  expenses.forEach(e => { if (e.mood) moodCounts[e.mood] = (moodCounts[e.mood] || 0) + 1; });
-  const moodEntries = Object.entries(moodCounts).sort((a, b) => b[1] - a[1]);
-
-  el.innerHTML = `
-    <div class="card">
-      <div class="safe-label">This month so far</div>
-      <div style="font-family:var(--font-display); font-size:46px; font-weight:300; letter-spacing:-0.03em; margin-top:6px;">${fmtMoney(total)}</div>
-      <div class="muted tiny" style="margin-top:6px;">across ${expenses.length} ${expenses.length === 1 ? 'expense' : 'expenses'}</div>
-      ${renderSpark(series, today)}
-    </div>
-
-    <div class="section-head"><div class="section-title">Where it went</div></div>
-    ${breakdown.length === 0
-      ? renderEmpty('No spending yet', 'Once you log expenses, breakdowns appear here.')
-      : `<div class="card"><div class="bar-list">${breakdown.map(c => `
-          <div class="bar-row">
-            <div class="bar-row-head">
-              <span class="name">${escapeHtml(c.name)}</span>
-              <span class="val">${fmtMoney(c.spent)} · ${total ? Math.round(c.spent / total * 100) : 0}%</span>
-            </div>
-            <div class="bar-track"><div class="bar-fill" style="width:${total ? (c.spent / total * 100) : 0}%"></div></div>
-          </div>
-        `).join('')}</div></div>`
-    }
-
-    ${expenses.length >= 3 ? `
-      <div class="section-head"><div class="section-title">Patterns</div></div>
-      <div class="card">
-        <div class="toggle-row" style="border:none; padding: 8px 0;">
-          <div class="label-block">
-            <div class="label-title">Biggest spending day</div>
-            <div class="label-sub">When wallets open most often</div>
-          </div>
-          <div style="font-family:var(--font-display); font-size:18px;">${dowNames[peakIdx]}</div>
-        </div>
-        ${moodEntries.length ? `
-          <div style="border-top:1px solid var(--border); padding-top: 14px; margin-top: 6px;">
-            <div class="muted tiny" style="margin-bottom: 8px;">Most common moods when spending</div>
-            <div class="mood-row">
-              ${moodEntries.slice(0, 4).map(([m, n]) => `<div class="mood is-selected">${escapeHtml(m)} · ${n}</div>`).join('')}
-            </div>
-          </div>
-        ` : ''}
-      </div>
-    ` : ''}
-  `;
-}
-
-function renderSpark(series, today) {
-  const w = 480, h = 100, pad = 6;
-  const max = Math.max(1, ...series);
-  const stepX = (w - pad * 2) / Math.max(1, series.length - 1);
-  const pts = series.map((v, i) => {
-    const x = pad + i * stepX;
-    const y = h - pad - (v / max) * (h - pad * 2);
-    return [x, y];
-  });
-  const lineD = pts.map((p, i) => (i === 0 ? 'M' : 'L') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
-  const areaD = `${lineD} L ${pts[pts.length-1][0].toFixed(1)} ${h-pad} L ${pad} ${h-pad} Z`;
-  const todayX = pad + (today - 1) * stepX;
-  return `
-    <svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
-      <path class="area" d="${areaD}"/>
-      <path class="line" d="${lineD}"/>
-      <line class="axis" x1="${todayX}" y1="${pad}" x2="${todayX}" y2="${h-pad}" stroke-dasharray="2 3"/>
-    </svg>
-  `;
-}
-
-/* ---------- view: SETTINGS ----------- */
-function renderSettings() {
-  const el = document.getElementById('view-settings');
-  el.innerHTML = `
-    <div class="section-head" style="margin-top:6px;"><div class="section-title">Preferences</div></div>
-    <div class="settings-group">
-      <div class="toggle-row">
-        <div class="label-block">
-          <div class="label-title">Pause-before-purchase prompt</div>
-          <div class="label-sub">Show a gentle reflection when logging discretionary expenses.</div>
-        </div>
-        <button class="toggle ${state.settings.reflectionEnabled ? 'on' : ''}" data-toggle="reflectionEnabled" aria-label="Toggle reflection"></button>
-      </div>
-      <div class="toggle-row">
-        <div class="label-block">
-          <div class="label-title">Budget streak</div>
-          <div class="label-sub">Count days where you stayed on pace.</div>
-        </div>
-        <button class="toggle ${state.settings.streakEnabled ? 'on' : ''}" data-toggle="streakEnabled" aria-label="Toggle streak"></button>
-      </div>
-      <div class="toggle-row">
-        <div class="label-block">
-          <div class="label-title">Light theme</div>
-          <div class="label-sub">Switch to a warm, paper-like background.</div>
-        </div>
-        <button class="toggle ${state.settings.theme === 'light' ? 'on' : ''}" data-theme-toggle aria-label="Toggle theme"></button>
-      </div>
-    </div>
-
-    <div class="section-head"><div class="section-title">Currency</div></div>
-    <div class="card card-tight">
-      <input class="input" id="currency-input" value="${escapeHtml(state.currency)}" maxlength="3" />
-      <div class="muted tiny" style="margin-top:8px;">Any short symbol works: $, €, £, ¥, RWF, etc.</div>
-    </div>
-
-    <div class="section-head"><div class="section-title">Your data</div></div>
-    <div class="card card-tight">
-      <div class="btn-row">
-        <button class="btn" data-action="export">Export backup</button>
-        <button class="btn" data-action="import">Import backup</button>
-      </div>
-      <div class="spacer-md"></div>
-      <button class="btn btn-danger" data-action="reset">Reset everything</button>
-      <div class="muted tiny" style="margin-top:10px;">Data is stored locally on this device. Nothing is sent anywhere.</div>
-    </div>
-
-    <div class="muted tiny center" style="margin: 26px 0 10px;">Tally · v1 · offline · single-user</div>
-  `;
-
-  el.querySelectorAll('[data-toggle]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const key = btn.dataset.toggle;
-      state.settings[key] = !state.settings[key];
+  list.querySelectorAll("input").forEach((input) => {
+    input.addEventListener("change", (e) => {
+      const cat = state.categories.find((c) => c.id === e.target.dataset.cat);
+      cat.budget = Number(e.target.value) || 0;
       saveState();
-      renderSettings();
-      refreshHeader();
+      renderBudget();
     });
   });
 
-  el.querySelector('[data-theme-toggle]').addEventListener('click', () => {
-    state.settings.theme = state.settings.theme === 'dark' ? 'light' : 'dark';
-    applyTheme();
-    saveState();
-    renderSettings();
+  const allocated = state.categories.reduce((s, c) => s + (c.budget || 0), 0) + (state.goal.enabled ? state.goal.monthlyContribution : 0);
+  document.getElementById("budget-unallocated").textContent = fmt(state.income - allocated);
+
+  document.getElementById("goal-name").value = state.goal.name || "";
+  document.getElementById("goal-target").value = state.goal.targetAmount || "";
+  document.getElementById("goal-date").value = state.goal.targetDate || "";
+  document.getElementById("goal-monthly").value = state.goal.monthlyContribution || "";
+
+  const proj = goalProjection();
+  const projEl = document.getElementById("goal-projection");
+  if (!state.goal.name) {
+    projEl.textContent = "Name a goal and set a monthly contribution to see a projection.";
+  } else if (proj && proj.done) {
+    projEl.textContent = `🎉 ${state.goal.name} is fully funded.`;
+  } else if (proj) {
+    projEl.textContent = `At ${fmt(state.goal.monthlyContribution)}/mo, you'll hit ${fmt(state.goal.targetAmount)} around ${proj.eta.toLocaleDateString(undefined, { month: "long", year: "numeric" })}.`;
+  } else {
+    projEl.textContent = "Set a monthly contribution to see a projection.";
+  }
+}
+
+/* ------------------------------------------------------------------
+   ADD
+------------------------------------------------------------------ */
+
+function renderAddCategoryChips(containerId, selectedGetter, onSelect) {
+  const box = document.getElementById(containerId);
+  box.innerHTML = "";
+  state.categories.forEach((cat) => {
+    const pace = categoryPace(cat.id);
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chip" + (selectedGetter() === cat.id ? " selected" : "") + (pace.hot ? " hot-cat" : "");
+    chip.textContent = cat.name;
+    chip.addEventListener("click", () => {
+      onSelect(cat.id);
+      renderAddCategoryChips(containerId, selectedGetter, onSelect);
+    });
+    box.appendChild(chip);
   });
-
-  el.querySelector('#currency-input').addEventListener('input', e => {
-    state.currency = e.target.value.trim() || '$';
-    saveState();
-  });
-
-  el.querySelector('[data-action="export"]').addEventListener('click', exportData);
-  el.querySelector('[data-action="import"]').addEventListener('click', () => document.getElementById('import-file').click());
-  el.querySelector('[data-action="reset"]').addEventListener('click', confirmReset);
 }
 
-/* ---------- theme ----------- */
-function applyTheme() {
-  document.documentElement.dataset.theme = state.settings.theme || 'dark';
-  document.querySelector('meta[name="theme-color"]')
-    ?.setAttribute('content', state.settings.theme === 'light' ? '#F7F5EF' : '#0F0F11');
+function renderAdd() {
+  if (!ui.selectedAddCategory && state.categories.length) ui.selectedAddCategory = state.categories[0].id;
+  renderAddCategoryChips(
+    "add-category-chips",
+    () => ui.selectedAddCategory,
+    (id) => (ui.selectedAddCategory = id)
+  );
 }
 
-/* ===================================================================
-   MODALS
-   =================================================================== */
+function handleAddSubmit() {
+  const amount = Number(document.getElementById("add-amount").value);
+  const note = document.getElementById("add-note").value.trim();
+  const categoryId = ui.selectedAddCategory;
 
-const modalRoot = document.getElementById('modal-root');
-
-function openModal(html, onClose) {
-  modalRoot.innerHTML = `
-    <div class="modal-backdrop" data-close></div>
-    <div class="modal" role="dialog" aria-modal="true">
-      <div class="modal-handle"></div>
-      ${html}
-    </div>
-  `;
-  modalRoot.classList.add('is-open');
-  modalRoot.setAttribute('aria-hidden', 'false');
-  modalRoot.querySelector('[data-close]').addEventListener('click', () => closeModal(onClose));
-}
-
-function closeModal(cb) {
-  modalRoot.classList.remove('is-open');
-  modalRoot.setAttribute('aria-hidden', 'true');
-  modalRoot.innerHTML = '';
-  if (typeof cb === 'function') cb();
-}
-
-/* ----- add expense modal ----- */
-function openAddExpense(prefill = {}) {
-  const cats = state.categories;
-  if (cats.length === 0) {
-    openModal(`
-      <h2 class="modal-title">Add a category first</h2>
-      <p class="modal-sub">You need at least one budget category to log expenses.</p>
-      <button class="btn btn-primary" data-go-budget>Go to Budget</button>
-    `);
-    modalRoot.querySelector('[data-go-budget]').addEventListener('click', () => { closeModal(); setView('budget'); });
+  if (!amount || amount <= 0) {
+    toast("Enter an amount first");
+    return;
+  }
+  if (!categoryId) {
+    toast("Pick a category first");
     return;
   }
 
-  let selectedCat = prefill.categoryId || cats[0].id;
-  let selectedMood = prefill.mood || '';
-  let amount = prefill.amount || '';
-  let note = prefill.note || '';
-  let date = prefill.date || todayISO();
+  if (state.settings.tradeoffPromptEnabled && isRiskyCategory(categoryId)) {
+    ui.pendingExpense = { amount, categoryId, note };
+    openTradeoffModal();
+    return;
+  }
 
-  openModal(`
-    <h2 class="modal-title">Add expense</h2>
-    <p class="modal-sub">Quick log. Pause to reflect if it's not essential.</p>
-
-    <div class="field">
-      <label>Amount</label>
-      <input type="number" inputmode="decimal" class="input input-amount" id="exp-amount" value="${amount}" placeholder="0.00" autofocus />
-    </div>
-
-    <div class="field">
-      <label>Category</label>
-      <div class="pill-row" id="exp-cats">
-        ${cats.map(c => `
-          <button type="button" class="pill ${c.id === selectedCat ? 'is-selected' : ''}" data-cat="${c.id}">
-            ${ICON[c.icon] || ''} <span>${escapeHtml(c.name)}</span>
-          </button>
-        `).join('')}
-      </div>
-    </div>
-
-    <div class="field">
-      <label>Note (optional)</label>
-      <input class="input" id="exp-note" value="${escapeHtml(note)}" placeholder="What was it for?" />
-    </div>
-
-    <div class="field">
-      <label>How did you feel?</label>
-      <div class="mood-row" id="exp-moods">
-        ${MOODS.map(m => `<button type="button" class="mood ${m === selectedMood ? 'is-selected' : ''}" data-mood="${m}">${m}</button>`).join('')}
-      </div>
-    </div>
-
-    <div class="field">
-      <label>Date</label>
-      <input type="date" class="input" id="exp-date" value="${date}" />
-    </div>
-
-    <div class="btn-row">
-      <button class="btn btn-ghost" data-close>Cancel</button>
-      <button class="btn btn-primary" id="exp-save">Save expense</button>
-    </div>
-  `);
-
-  const m = modalRoot;
-  m.querySelector('[data-close]').addEventListener('click', () => closeModal());
-  m.querySelectorAll('#exp-cats .pill').forEach(p => {
-    p.addEventListener('click', () => {
-      selectedCat = p.dataset.cat;
-      m.querySelectorAll('#exp-cats .pill').forEach(x => x.classList.toggle('is-selected', x.dataset.cat === selectedCat));
-    });
-  });
-  m.querySelectorAll('#exp-moods .mood').forEach(p => {
-    p.addEventListener('click', () => {
-      selectedMood = selectedMood === p.dataset.mood ? '' : p.dataset.mood;
-      m.querySelectorAll('#exp-moods .mood').forEach(x => x.classList.toggle('is-selected', x.dataset.mood === selectedMood));
-    });
-  });
-
-  m.querySelector('#exp-save').addEventListener('click', () => {
-    const amt = parseFloat(m.querySelector('#exp-amount').value);
-    if (!amt || amt <= 0) { m.querySelector('#exp-amount').focus(); return; }
-    const cat = getCategory(selectedCat);
-    const data = {
-      amount: amt,
-      categoryId: selectedCat,
-      note: m.querySelector('#exp-note').value.trim(),
-      date: m.querySelector('#exp-date').value || todayISO(),
-      mood: selectedMood,
-      _fromWishId: prefill._fromWishId
-    };
-    if (state.settings.reflectionEnabled && cat && !cat.essential) {
-      openReflection(data);
-    } else {
-      commitExpense(data);
-    }
-  });
+  logExpense(amount, categoryId, note, false, null);
+  clearAddForm();
+  toast("Added");
+  switchView("home");
 }
 
-function commitExpense(data) {
-  const fromWishId = data._fromWishId;
-  const exp = { id: uid(), ...data };
-  delete exp._fromWishId;
-  state.expenses.push(exp);
-  if (fromWishId) {
-    state.wishlist = state.wishlist.filter(x => x.id !== fromWishId);
+function logExpense(amount, categoryId, note, impulse, mood) {
+  state.transactions.push({
+    id: uid(),
+    date: new Date().toISOString(),
+    amount,
+    categoryId,
+    note,
+    tag: impulse ? "impulse" : null,
+    mood: mood || null,
+    small: amount < (state.settings.smallPurchaseThreshold || 0),
+  });
+  saveState();
+}
+
+function clearAddForm() {
+  document.getElementById("add-amount").value = "";
+  document.getElementById("add-note").value = "";
+}
+
+/* ------------------------------------------------------------------
+   TRADEOFF MODAL
+------------------------------------------------------------------ */
+
+function openTradeoffModal() {
+  const { amount, categoryId } = ui.pendingExpense;
+  const t = computeTradeoff(amount, categoryId);
+
+  document.getElementById("tradeoff-amount").textContent = fmtCents(amount);
+
+  const lines = [];
+  if (t.pace.budget > 0) {
+    lines.push(
+      `<div class="tradeoff-line ${t.pace.hot ? "warn" : ""}"><span>${escapeHtml(t.cat.name)} budget</span><strong>${t.catPct}% used${t.pace.hot ? " · running hot" : ""}</strong></div>`
+    );
+  }
+  lines.push(
+    `<div class="tradeoff-line"><span>Daily safe-to-spend</span><strong>${fmt(t.before)} → ${fmt(t.after)}</strong></div>`
+  );
+  if (t.goalPct !== null) {
+    lines.push(
+      `<div class="tradeoff-line"><span>vs. this month's ${escapeHtml(state.goal.name || "goal")} contribution</span><strong>${t.goalPct}%</strong></div>`
+    );
+  }
+  document.getElementById("tradeoff-lines").innerHTML = lines.join("");
+
+  ui.selectedMood = null;
+  document.querySelectorAll("#mood-chips .chip").forEach((c) => c.classList.remove("selected"));
+
+  document.getElementById("tradeoff-modal").classList.add("open");
+}
+
+function closeTradeoffModal() {
+  document.getElementById("tradeoff-modal").classList.remove("open");
+  ui.pendingExpense = null;
+}
+
+/* ------------------------------------------------------------------
+   WISHLIST
+------------------------------------------------------------------ */
+
+const WISH_WAIT_MS = 24 * 60 * 60 * 1000;
+
+function isWishReady(item) {
+  return item.status === "waiting" && Date.now() - new Date(item.addedAt).getTime() >= WISH_WAIT_MS;
+}
+
+function renderWishlist() {
+  if (!ui.selectedWishCategory && state.categories.length) ui.selectedWishCategory = state.categories[0].id;
+  renderAddCategoryChips(
+    "wish-category-chips",
+    () => ui.selectedWishCategory,
+    (id) => (ui.selectedWishCategory = id)
+  );
+
+  const waitingBox = document.getElementById("wishlist-waiting");
+  const readyBox = document.getElementById("wishlist-ready");
+  waitingBox.innerHTML = "";
+  readyBox.innerHTML = "";
+
+  const waiting = state.wishlist.filter((w) => w.status === "waiting" && !isWishReady(w));
+  const ready = state.wishlist.filter((w) => w.status === "waiting" && isWishReady(w));
+
+  if (waiting.length === 0) waitingBox.innerHTML = `<div class="empty-note">Nothing waiting.</div>`;
+  waiting.forEach((w) => {
+    const hoursLeft = Math.max(0, Math.ceil((WISH_WAIT_MS - (Date.now() - new Date(w.addedAt).getTime())) / 3600000));
+    const row = document.createElement("div");
+    row.className = "wish-item";
+    row.innerHTML = `
+      <div>
+        <div class="wish-info">${escapeHtml(w.name)} · ${fmt(w.amount)}</div>
+        <div class="wish-meta">ready in ~${hoursLeft}h</div>
+      </div>`;
+    waitingBox.appendChild(row);
+  });
+
+  if (ready.length === 0) readyBox.innerHTML = `<div class="empty-note">Nothing ready to decide yet.</div>`;
+  ready.forEach((w) => {
+    const row = document.createElement("div");
+    row.className = "wish-item";
+    row.innerHTML = `
+      <div>
+        <div class="wish-info">${escapeHtml(w.name)} · ${fmt(w.amount)}</div>
+        <div class="wish-meta">waited 24h — still want it?</div>
+      </div>
+      <div class="wish-actions">
+        <button class="buy-btn" data-id="${w.id}">Buy</button>
+        <button class="skip-btn" data-id="${w.id}">Skip → goal</button>
+      </div>`;
+    readyBox.appendChild(row);
+  });
+
+  readyBox.querySelectorAll(".buy-btn").forEach((btn) =>
+    btn.addEventListener("click", () => decideWishlistItem(btn.dataset.id, "buy"))
+  );
+  readyBox.querySelectorAll(".skip-btn").forEach((btn) =>
+    btn.addEventListener("click", () => decideWishlistItem(btn.dataset.id, "skip"))
+  );
+}
+
+function decideWishlistItem(id, decision) {
+  const item = state.wishlist.find((w) => w.id === id);
+  if (!item) return;
+  if (decision === "buy") {
+    logExpense(item.amount, item.categoryId, item.name, false, null);
+    item.status = "bought";
+    item.decidedAt = new Date().toISOString();
+    toast("Logged as an expense");
+  } else {
+    item.status = "skipped";
+    item.decidedAt = new Date().toISOString();
+    if (state.goal.enabled) {
+      state.goal.saved += item.amount;
+      state.goal.contributions.push({ date: new Date().toISOString(), amount: item.amount, source: "wishlist-skip" });
+      toast(`Nice — ${fmt(item.amount)} just moved toward ${state.goal.name || "your goal"}`);
+    } else {
+      toast("Skipped — set a goal in Budget to route savings like this automatically");
+    }
   }
   saveState();
-  closeModal();
-  render();
+  renderWishlist();
+  renderHome();
 }
 
-/* ----- reflection prompt ----- */
-function openReflection(data) {
-  const cat = getCategory(data.categoryId);
-  const questions = [
-    'Will you appreciate this in seven days?',
-    'Is this a need, or a feeling?',
-    'What goal does this trade off against?',
-    'Future you — would they thank you?'
-  ];
-  const q = questions[Math.floor(Math.random() * questions.length)];
+function handleWishSubmit() {
+  const name = document.getElementById("wish-name").value.trim();
+  const amount = Number(document.getElementById("wish-amount").value);
+  const categoryId = ui.selectedWishCategory;
+  if (!name) return toast("Give it a name");
+  if (!amount || amount <= 0) return toast("Enter an amount");
+  if (!categoryId) return toast("Pick a category");
 
-  openModal(`
-    <div class="reflection">
-      <div class="item-preview">${fmtMoney(data.amount)} · ${escapeHtml(cat?.name || '')}${data.note ? ' · ' + escapeHtml(data.note) : ''}</div>
-      <div class="question">${q}</div>
-      <div class="btn-row">
-        <button class="btn btn-ghost" data-action="wish">Save to wishlist</button>
-        <button class="btn btn-primary" data-action="confirm">Yes, log it</button>
-      </div>
-      <div class="spacer-sm"></div>
-      <button class="btn btn-ghost" data-close>Cancel</button>
-    </div>
-  `);
-
-  modalRoot.querySelector('[data-close]').addEventListener('click', () => closeModal());
-  modalRoot.querySelector('[data-action="confirm"]').addEventListener('click', () => commitExpense(data));
-  modalRoot.querySelector('[data-action="wish"]').addEventListener('click', () => {
-    state.wishlist.push({
-      id: uid(),
-      name: data.note || (cat ? cat.name + ' item' : 'Wishlist item'),
-      amount: data.amount,
-      why: '',
-      savedAt: new Date().toISOString()
-    });
-    saveState();
-    closeModal();
-    setView('wishlist');
+  state.wishlist.push({
+    id: uid(),
+    name,
+    amount,
+    categoryId,
+    addedAt: new Date().toISOString(),
+    status: "waiting",
+    decidedAt: null,
   });
-}
-
-/* ----- category modals ----- */
-function openAddCategory() {
-  let icon = 'personal';
-  let tone = 'default';
-  let essential = false;
-  openModal(`
-    <h2 class="modal-title">New category</h2>
-    <p class="modal-sub">Name it, pick an icon, give it a job.</p>
-
-    <div class="field">
-      <label>Name</label>
-      <input class="input" id="cat-name" placeholder="e.g. Coffee, Gym, Books" autofocus />
-    </div>
-
-    <div class="field">
-      <label>Allocated amount</label>
-      <input type="number" inputmode="decimal" class="input" id="cat-alloc" placeholder="0.00" />
-    </div>
-
-    <div class="field">
-      <label>Icon</label>
-      <div class="pill-row" id="cat-icons">
-        ${['personal','food','transport','savings','entertainment','emergency','health','bills','home']
-          .map(i => `<button type="button" class="pill ${i === icon ? 'is-selected' : ''}" data-icon="${i}">${ICON[i]}</button>`).join('')}
-      </div>
-    </div>
-
-    <div class="field">
-      <label>Type</label>
-      <div class="pill-row" id="cat-types">
-        <button type="button" class="pill" data-essential="true">Essential</button>
-        <button type="button" class="pill is-selected" data-essential="false">Discretionary</button>
-      </div>
-    </div>
-
-    <div class="btn-row">
-      <button class="btn btn-ghost" data-close>Cancel</button>
-      <button class="btn btn-primary" id="cat-save">Add category</button>
-    </div>
-  `);
-
-  modalRoot.querySelector('[data-close]').addEventListener('click', () => closeModal());
-  modalRoot.querySelectorAll('#cat-icons .pill').forEach(p => p.addEventListener('click', () => {
-    icon = p.dataset.icon;
-    modalRoot.querySelectorAll('#cat-icons .pill').forEach(x => x.classList.toggle('is-selected', x.dataset.icon === icon));
-  }));
-  modalRoot.querySelectorAll('#cat-types .pill').forEach(p => p.addEventListener('click', () => {
-    essential = p.dataset.essential === 'true';
-    modalRoot.querySelectorAll('#cat-types .pill').forEach(x => x.classList.toggle('is-selected', x.dataset.essential === String(essential)));
-  }));
-
-  modalRoot.querySelector('#cat-save').addEventListener('click', () => {
-    const name = modalRoot.querySelector('#cat-name').value.trim();
-    if (!name) return;
-    const alloc = parseFloat(modalRoot.querySelector('#cat-alloc').value) || 0;
-    state.categories.push({
-      id: uid(),
-      name, icon, allocated: alloc, essential, tone: essential ? 'default' : 'warn'
-    });
-    saveState();
-    closeModal();
-    render();
-  });
-}
-
-function openEditCategory(catId) {
-  const cat = getCategory(catId);
-  if (!cat) return;
-
-  openModal(`
-    <h2 class="modal-title">Edit category</h2>
-    <p class="modal-sub">Adjust the amount or remove it.</p>
-
-    <div class="field">
-      <label>Name</label>
-      <input class="input" id="cat-name" value="${escapeHtml(cat.name)}" />
-    </div>
-
-    <div class="field">
-      <label>Allocated for this month</label>
-      <input type="number" inputmode="decimal" class="input input-amount" id="cat-alloc" value="${cat.allocated || ''}" placeholder="0.00" />
-    </div>
-
-    <div class="field">
-      <label>Spent so far</label>
-      <input class="input" disabled value="${fmtMoney(categorySpent(cat.id))}" />
-    </div>
-
-    <div class="btn-row">
-      <button class="btn btn-ghost" data-close>Cancel</button>
-      <button class="btn btn-primary" id="cat-save">Save</button>
-    </div>
-    <div class="spacer-md"></div>
-    <button class="btn btn-danger" id="cat-delete">Delete category</button>
-  `);
-
-  modalRoot.querySelector('[data-close]').addEventListener('click', () => closeModal());
-  modalRoot.querySelector('#cat-save').addEventListener('click', () => {
-    cat.name = modalRoot.querySelector('#cat-name').value.trim() || cat.name;
-    cat.allocated = parseFloat(modalRoot.querySelector('#cat-alloc').value) || 0;
-    saveState();
-    closeModal();
-    render();
-  });
-  modalRoot.querySelector('#cat-delete').addEventListener('click', () => {
-    confirmAction('Delete this category?', 'Expenses logged to it will stay, but become uncategorised.', () => {
-      state.categories = state.categories.filter(c => c.id !== catId);
-      saveState();
-      closeModal();
-      render();
-    });
-  });
-}
-
-/* ----- wishlist modal ----- */
-function openAddWishlist() {
-  openModal(`
-    <h2 class="modal-title">Add to wishlist</h2>
-    <p class="modal-sub">Sit with this for at least 24 hours.</p>
-    <div class="field">
-      <label>What is it?</label>
-      <input class="input" id="w-name" placeholder="e.g. new headphones" autofocus />
-    </div>
-    <div class="field">
-      <label>How much?</label>
-      <input type="number" inputmode="decimal" class="input input-amount" id="w-amount" placeholder="0.00" />
-    </div>
-    <div class="field">
-      <label>Why do you want it? (optional)</label>
-      <textarea class="textarea" id="w-why" placeholder="Just a sentence."></textarea>
-    </div>
-    <div class="btn-row">
-      <button class="btn btn-ghost" data-close>Cancel</button>
-      <button class="btn btn-primary" id="w-save">Save</button>
-    </div>
-  `);
-  modalRoot.querySelector('[data-close]').addEventListener('click', () => closeModal());
-  modalRoot.querySelector('#w-save').addEventListener('click', () => {
-    const name = modalRoot.querySelector('#w-name').value.trim();
-    const amount = parseFloat(modalRoot.querySelector('#w-amount').value) || 0;
-    const why = modalRoot.querySelector('#w-why').value.trim();
-    if (!name) return;
-    state.wishlist.push({ id: uid(), name, amount, why, savedAt: new Date().toISOString() });
-    saveState();
-    closeModal();
-    render();
-  });
-}
-
-function approveWish(id) {
-  const w = state.wishlist.find(x => x.id === id);
-  if (!w) return;
-  // Open expense modal pre-filled. Mark the wish id so it gets removed only on save.
-  openAddExpense({ amount: w.amount, note: w.name, _fromWishId: id });
-}
-
-function removeWish(id) {
-  state.wishlist = state.wishlist.filter(x => x.id !== id);
   saveState();
-  render();
+  document.getElementById("wish-name").value = "";
+  document.getElementById("wish-amount").value = "";
+  toast("Parked. Check back in 24h.");
+  renderWishlist();
 }
 
-/* ----- confirm modal ----- */
-function confirmAction(title, sub, onConfirm) {
-  openModal(`
-    <h2 class="modal-title">${escapeHtml(title)}</h2>
-    <p class="modal-sub">${escapeHtml(sub)}</p>
-    <div class="btn-row">
-      <button class="btn btn-ghost" data-close>Cancel</button>
-      <button class="btn btn-danger" data-action="confirm">Yes, do it</button>
-    </div>
-  `);
-  modalRoot.querySelector('[data-close]').addEventListener('click', () => closeModal());
-  modalRoot.querySelector('[data-action="confirm"]').addEventListener('click', () => {
-    closeModal();
-    onConfirm();
+/* ------------------------------------------------------------------
+   INSIGHTS — hand-rolled charts, no chart library
+------------------------------------------------------------------ */
+
+function sparklineSVG(values, opts = {}) {
+  const w = opts.width || 320;
+  const h = opts.height || 90;
+  const pad = 8;
+  const max = Math.max(...values, 1);
+  const stepX = values.length > 1 ? (w - 2 * pad) / (values.length - 1) : 0;
+  const pts = values.map((v, i) => {
+    const x = pad + i * stepX;
+    const y = h - pad - (v / max) * (h - 2 * pad);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
   });
+  const line = pts.join(" ");
+  const area = `${pad},${h - pad} ${line} ${w - pad},${h - pad}`;
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+    <polygon points="${area}" fill="var(--accent-soft)"></polygon>
+    <polyline points="${line}" fill="none" stroke="var(--accent)" stroke-width="2.5"></polyline>
+  </svg>`;
 }
 
-/* ===================================================================
-   IMPORT / EXPORT / RESET
-   =================================================================== */
-function exportData() {
-  const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+function barRows(items) {
+  // items: [{label, value, display, max, color}]
+  return items
+    .map((it) => {
+      const pct = it.max > 0 ? Math.min(100, Math.round((it.value / it.max) * 100)) : 0;
+      return `
+      <div class="pace-row">
+        <div class="pace-top"><span>${escapeHtml(it.label)}</span><span>${escapeHtml(it.display)}</span></div>
+        <div class="progress-track">
+          <div class="progress-fill ${it.color || ""}" style="width:${pct}%"></div>
+        </div>
+      </div>`;
+    })
+    .join("");
+}
+
+function renderInsights() {
+  // spending trend: last 30 days daily totals
+  const days = [];
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    d.setHours(0, 0, 0, 0);
+    const key = d.toISOString().slice(0, 10);
+    const total = state.transactions.filter((t) => t.date.slice(0, 10) === key).reduce((s, t) => s + t.amount, 0);
+    days.push(total);
+  }
+  document.getElementById("chart-trend").innerHTML = sparklineSVG(days);
+
+  // category pace
+  document.getElementById("chart-pace").innerHTML = barRows(
+    state.categories.map((c) => {
+      const pace = categoryPace(c.id);
+      return {
+        label: c.name,
+        value: pace.spent,
+        max: c.budget || 1,
+        display: `${fmt(pace.spent)} / ${fmt(c.budget)}`,
+        color: pace.hot ? "danger" : "",
+      };
+    })
+  );
+
+  // category breakdown (this month, share of total)
+  const mSpent = totalSpent();
+  document.getElementById("chart-breakdown").innerHTML =
+    barRows(
+      state.categories
+        .map((c) => ({ label: c.name, value: categorySpent(c.id), max: mSpent || 1, display: fmt(categorySpent(c.id)) }))
+        .sort((a, b) => b.value - a.value)
+    ) || `<div class="empty-note">No spending yet this month.</div>`;
+
+  // day of week pattern
+  const dowLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const dowTotals = [0, 0, 0, 0, 0, 0, 0];
+  state.transactions.forEach((t) => {
+    dowTotals[new Date(t.date).getDay()] += t.amount;
+  });
+  const dowMax = Math.max(...dowTotals, 1);
+  document.getElementById("chart-dow").innerHTML = barRows(
+    dowLabels.map((label, i) => ({ label, value: dowTotals[i], max: dowMax, display: fmt(dowTotals[i]) }))
+  );
+
+  // impulse vs skipped-to-goal, this month
+  const impulseTotal = monthTransactions().filter((t) => t.tag === "impulse").reduce((s, t) => s + t.amount, 0);
+  const skippedTotal = state.goal.contributions
+    .filter((c) => c.source === "wishlist-skip" && isSameMonth(c.date, monthKey()))
+    .reduce((s, c) => s + c.amount, 0);
+  const impMax = Math.max(impulseTotal, skippedTotal, 1);
+  document.getElementById("chart-impulse").innerHTML = barRows([
+    { label: "Impulse-flagged spend", value: impulseTotal, max: impMax, display: fmt(impulseTotal), color: "danger" },
+    { label: "Skipped → goal", value: skippedTotal, max: impMax, display: fmt(skippedTotal), color: "goal-fill" },
+  ]);
+
+  // mood patterns
+  const moodTotals = {};
+  MOODS.forEach((m) => (moodTotals[m.id] = 0));
+  state.transactions.forEach((t) => {
+    if (t.mood && moodTotals[t.mood] !== undefined) moodTotals[t.mood] += t.amount;
+  });
+  const moodMax = Math.max(...Object.values(moodTotals), 1);
+  const moodRows = MOODS.filter((m) => moodTotals[m.id] > 0).map((m) => ({
+    label: m.label,
+    value: moodTotals[m.id],
+    max: moodMax,
+    display: fmt(moodTotals[m.id]),
+  }));
+  document.getElementById("chart-mood").innerHTML =
+    moodRows.length ? barRows(moodRows) : `<div class="empty-note">No mood tags logged yet — they show up when you log a purchase from the pause screen.</div>`;
+
+  // goal progress over time
+  if (state.goal.enabled && state.goal.contributions.length) {
+    const sorted = [...state.goal.contributions].sort((a, b) => new Date(a.date) - new Date(b.date));
+    let running = 0;
+    const cum = sorted.map((c) => (running += c.amount));
+    document.getElementById("chart-goal").innerHTML = sparklineSVG(cum);
+  } else {
+    document.getElementById("chart-goal").innerHTML = `<div class="empty-note">Set a goal in Budget to start tracking progress.</div>`;
+  }
+}
+
+/* ------------------------------------------------------------------
+   SETTINGS
+------------------------------------------------------------------ */
+
+function renderSettings() {
+  document.getElementById("setting-tradeoff").checked = state.settings.tradeoffPromptEnabled;
+  document.getElementById("setting-streak").checked = state.settings.streakEnabled;
+  document.getElementById("setting-theme").checked = state.settings.theme === "light";
+  document.getElementById("setting-currency").value = state.settings.currency;
+  document.getElementById("setting-small-threshold").value = state.settings.smallPurchaseThreshold;
+}
+
+function exportBackup() {
+  const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
+  const a = document.createElement("a");
   a.href = url;
-  a.download = `tally-backup-${todayISO()}.json`;
+  a.download = `tally-backup-${monthKey()}.json`;
   a.click();
   URL.revokeObjectURL(url);
 }
 
-function importData(file) {
+function importBackup(file) {
   const reader = new FileReader();
   reader.onload = () => {
     try {
       const parsed = JSON.parse(reader.result);
-      if (typeof parsed !== 'object') throw new Error('Bad file');
-      confirmAction('Replace your data with this backup?', 'Your current data will be overwritten.', () => {
-        state = { ...DEFAULT_STATE, ...parsed,
-          settings: { ...DEFAULT_STATE.settings, ...(parsed.settings || {}) } };
-        saveState();
-        applyTheme();
-        render();
-      });
+      const base = defaultState();
+      state = {
+        ...base,
+        ...parsed,
+        goal: { ...base.goal, ...(parsed.goal || {}) },
+        settings: { ...base.settings, ...(parsed.settings || {}) },
+        meta: { ...base.meta, ...(parsed.meta || {}) },
+      };
+      saveState();
+      renderAll();
+      toast("Backup imported");
     } catch (e) {
-      alert('That file does not look like a Tally backup.');
+      toast("Couldn't read that file");
     }
   };
   reader.readAsText(file);
 }
 
-function confirmReset() {
-  confirmAction('Reset all data?', 'This clears your income, categories, expenses, and wishlist on this device. There is no undo.', () => {
-    state = structuredClone(DEFAULT_STATE);
+/* ------------------------------------------------------------------
+   Category modal (Budget → + Category)
+------------------------------------------------------------------ */
+
+function openCategoryModal() {
+  document.getElementById("new-cat-name").value = "";
+  document.getElementById("new-cat-budget").value = "";
+  document.getElementById("new-cat-essential").checked = false;
+  document.getElementById("category-modal").classList.add("open");
+}
+
+function closeCategoryModal() {
+  document.getElementById("category-modal").classList.remove("open");
+}
+
+function saveNewCategory() {
+  const name = document.getElementById("new-cat-name").value.trim();
+  const budget = Number(document.getElementById("new-cat-budget").value) || 0;
+  const essential = document.getElementById("new-cat-essential").checked;
+  if (!name) return toast("Give it a name");
+  state.categories.push({ id: "cat-" + uid(), name, budget, essential });
+  saveState();
+  closeCategoryModal();
+  renderBudget();
+  toast("Category added");
+}
+
+/* ------------------------------------------------------------------
+   Misc helpers
+------------------------------------------------------------------ */
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str == null ? "" : String(str);
+  return div.innerHTML;
+}
+
+/* ------------------------------------------------------------------
+   Wire up events
+------------------------------------------------------------------ */
+
+function wireEvents() {
+  document.querySelectorAll(".tab-btn").forEach((btn) => {
+    btn.addEventListener("click", () => switchView(btn.dataset.view));
+  });
+
+  // Budget
+  document.getElementById("budget-income").addEventListener("change", (e) => {
+    state.income = Number(e.target.value) || 0;
+    saveState();
+    renderBudget();
+  });
+  document.getElementById("add-category-btn").addEventListener("click", openCategoryModal);
+  document.getElementById("category-cancel-btn").addEventListener("click", closeCategoryModal);
+  document.getElementById("category-save-btn").addEventListener("click", saveNewCategory);
+
+  ["goal-name", "goal-target", "goal-date", "goal-monthly"].forEach((id) => {
+    document.getElementById(id).addEventListener("change", (e) => {
+      const key = id.replace("goal-", "");
+      const map = { name: "name", target: "targetAmount", date: "targetDate", monthly: "monthlyContribution" };
+      const field = map[key];
+      let val = e.target.value;
+      if (field === "targetAmount" || field === "monthlyContribution") val = Number(val) || 0;
+      state.goal[field] = val;
+      state.goal.enabled = !!(state.goal.name && state.goal.targetAmount > 0);
+      saveState();
+      renderBudget();
+      renderHome();
+    });
+  });
+
+  // Add
+  document.getElementById("add-submit-btn").addEventListener("click", handleAddSubmit);
+
+  // Tradeoff modal
+  document.querySelectorAll("#mood-chips .chip").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      const already = chip.classList.contains("selected");
+      document.querySelectorAll("#mood-chips .chip").forEach((c) => c.classList.remove("selected"));
+      if (!already) {
+        chip.classList.add("selected");
+        ui.selectedMood = chip.dataset.mood;
+      } else {
+        ui.selectedMood = null;
+      }
+    });
+  });
+  document.getElementById("tradeoff-cancel-btn").addEventListener("click", () => {
+    closeTradeoffModal();
+  });
+  document.getElementById("tradeoff-confirm-btn").addEventListener("click", () => {
+    const { amount, categoryId, note } = ui.pendingExpense;
+    logExpense(amount, categoryId, note, true, ui.selectedMood);
+    closeTradeoffModal();
+    clearAddForm();
+    toast("Added");
+    switchView("home");
+  });
+  document.getElementById("tradeoff-wishlist-btn").addEventListener("click", () => {
+    const { amount, categoryId, note } = ui.pendingExpense;
+    state.wishlist.push({
+      id: uid(),
+      name: note || "Untitled",
+      amount,
+      categoryId,
+      addedAt: new Date().toISOString(),
+      status: "waiting",
+      decidedAt: null,
+    });
+    saveState();
+    closeTradeoffModal();
+    clearAddForm();
+    toast("Parked in wishlist for 24h");
+    switchView("wishlist");
+  });
+
+  // Wishlist
+  document.getElementById("wish-submit-btn").addEventListener("click", handleWishSubmit);
+
+  // Settings
+  document.getElementById("setting-tradeoff").addEventListener("change", (e) => {
+    state.settings.tradeoffPromptEnabled = e.target.checked;
+    saveState();
+  });
+  document.getElementById("setting-streak").addEventListener("change", (e) => {
+    state.settings.streakEnabled = e.target.checked;
+    saveState();
+    renderAll();
+  });
+  document.getElementById("setting-theme").addEventListener("change", (e) => {
+    state.settings.theme = e.target.checked ? "light" : "dark";
     saveState();
     applyTheme();
-    render();
+  });
+  document.getElementById("setting-currency").addEventListener("change", (e) => {
+    state.settings.currency = e.target.value.trim() || "$";
+    saveState();
+    renderAll();
+  });
+  document.getElementById("setting-small-threshold").addEventListener("change", (e) => {
+    state.settings.smallPurchaseThreshold = Number(e.target.value) || 0;
+    saveState();
+  });
+  document.getElementById("export-btn").addEventListener("click", exportBackup);
+  document.getElementById("import-input").addEventListener("change", (e) => {
+    if (e.target.files[0]) importBackup(e.target.files[0]);
+  });
+  document.getElementById("reset-btn").addEventListener("click", () => {
+    if (confirm("This clears all Tally data on this device. Continue?")) {
+      localStorage.removeItem(STORAGE_KEY);
+      loadState();
+      renderAll();
+      toast("Reset done");
+    }
   });
 }
 
-/* ===================================================================
-   UTILS
-   =================================================================== */
-function escapeHtml(str) {
-  if (str == null) return '';
-  return String(str)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
+/* ------------------------------------------------------------------
+   Init
+------------------------------------------------------------------ */
 
-/* ===================================================================
-   INIT
-   =================================================================== */
-function init() {
-  applyTheme();
-  refreshHeader();
-  checkStreak();
-
-  // bottom nav
-  document.querySelectorAll('.nav-item').forEach(b => {
-    b.addEventListener('click', () => setView(b.dataset.view));
-  });
-  document.getElementById('open-add').addEventListener('click', () => openAddExpense());
-
-  // streak tap → insights
-  document.getElementById('streak-pill').addEventListener('click', () => setView('insights'));
-
-  // import file
-  document.getElementById('import-file').addEventListener('change', e => {
-    const file = e.target.files[0];
-    if (file) importData(file);
-    e.target.value = '';
-  });
-
-  // close modal on Escape
-  document.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && modalRoot.classList.contains('is-open')) closeModal();
-  });
-
-  // hidden Insights view: tap "Insights" link in home to switch
-  // (We already wired this in renderHome; no global needed here.)
-
-  setView('home');
-}
-
-document.addEventListener('DOMContentLoaded', init);
-
-})();
+document.addEventListener("DOMContentLoaded", () => {
+  loadState();
+  wireEvents();
+  renderAll();
+});
